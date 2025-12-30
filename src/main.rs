@@ -133,6 +133,10 @@ struct Args {
     #[arg(long, default_value_t = false)]
     hide_hubs: bool,
 
+    /// Exclude devices with the specified vendor and product ID numbers (in hexadecimal) in format VID:PID. Can be specified multiple times or comma-separated
+    #[arg(long = "exclude-vidpid", value_parser = parse_vidpid_pair, value_delimiter = ',', num_args = 1..)]
+    exclude_vidpid: Option<Vec<(u16, u16)>>,
+
     /// Show root hubs when listing; Linux only
     #[arg(long, default_value_t = false)]
     list_root_hubs: bool,
@@ -299,6 +303,10 @@ fn merge_config(c: &mut Config, a: &Args) {
     if a.block_operation.is_some() {
         c.block_operation = a.block_operation;
     }
+    // override exclude_vidpid if passed
+    if a.exclude_vidpid.is_some() {
+        c.exclude_vidpid = a.exclude_vidpid.clone();
+    }
     c.sort_buses |= a.sort_buses;
     // take larger debug level
     c.verbose = c.verbose.max(a.verbose);
@@ -313,8 +321,8 @@ fn parse_vidpid(s: &str) -> Result<(Option<u16>, Option<u16>)> {
                 .first()
                 .filter(|v| !v.is_empty())
                 .map_or(Ok(None), |v| {
-                    u32::from_str_radix(v.trim().trim_start_matches("0x"), 16)
-                        .map(|v| Some(v as u16))
+                    u16::from_str_radix(v.trim().trim_start_matches("0x"), 16)
+                        .map(Some)
                         .map_err(|e| Error::new(ErrorKind::Parsing, &e.to_string()))
                 })?;
         let pid: Option<u16> =
@@ -322,19 +330,38 @@ fn parse_vidpid(s: &str) -> Result<(Option<u16>, Option<u16>)> {
                 .get(1)
                 .filter(|v| !v.is_empty())
                 .map_or(Ok(None), |v| {
-                    u32::from_str_radix(v.trim().trim_start_matches("0x"), 16)
-                        .map(|v| Some(v as u16))
+                    u16::from_str_radix(v.trim().trim_start_matches("0x"), 16)
+                        .map(Some)
                         .map_err(|e| Error::new(ErrorKind::Parsing, &e.to_string()))
                 })?;
 
         Ok((vid, pid))
     } else {
-        let vid: Option<u16> = u32::from_str_radix(s.trim().trim_start_matches("0x"), 16)
-            .map(|v| Some(v as u16))
+        let vid: Option<u16> = u16::from_str_radix(s.trim().trim_start_matches("0x"), 16)
+            .map(Some)
             .map_err(|e| Error::new(ErrorKind::Parsing, &e.to_string()))?;
 
         Ok((vid, None))
     }
+}
+
+/// Parse VID:PID pair for exclusion filter
+fn parse_vidpid_pair(s: &str) -> Result<(u16, u16)> {
+    let vid_split: Vec<&str> = s.split(':').collect();
+    if vid_split.len() != 2 {
+        return Err(Error::new(
+            ErrorKind::Parsing,
+            &format!("Invalid VID:PID format '{s}', expected 'VID:PID'"),
+        ));
+    }
+
+    let vid = u16::from_str_radix(vid_split[0].trim().trim_start_matches("0x"), 16)
+        .map_err(|e| Error::new(ErrorKind::Parsing, &format!("Invalid VID: {e}")))?;
+
+    let pid = u16::from_str_radix(vid_split[1].trim().trim_start_matches("0x"), 16)
+        .map_err(|e| Error::new(ErrorKind::Parsing, &format!("Invalid PID: {e}")))?;
+
+    Ok((vid, pid))
 }
 
 /// Parse the show Option<bus>:device lsusb format
@@ -764,6 +791,8 @@ fn cyme() -> Result<()> {
         || args.filter_name.is_some()
         || args.filter_serial.is_some()
         || args.filter_class.is_some()
+        || args.exclude_vidpid.is_some()
+        || config.exclude_vidpid.is_some()
     {
         let mut f = profiler::Filter::new();
 
@@ -807,6 +836,11 @@ fn cyme() -> Result<()> {
         f.class = args.filter_class;
         f.exclude_empty_hub = config.hide_hubs;
         f.exclude_empty_bus = config.hide_buses;
+        // args.exclude_vidpid takes precedence, otherwise use config
+        f.exclude_vidpid = args
+            .exclude_vidpid
+            .clone()
+            .or(config.exclude_vidpid.clone());
         // exclude root hubs unless:
         // * lsusb compat (shows root_hubs)
         // * json - for --from-json support

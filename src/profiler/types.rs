@@ -2006,6 +2006,8 @@ pub struct Filter {
     pub exclude_empty_bus: bool,
     /// Exclude empty hubs in the tree
     pub exclude_empty_hub: bool,
+    /// Exclude devices matching these vendor:product pairs
+    pub exclude_vidpid: Option<Vec<(u16, u16)>>,
     /// Don't exclude Linux root_hub devices - this is inverse because they are pseudo [`Bus`]'s in the tree
     pub no_exclude_root_hub: bool,
     /// Case sensitive matching for strings. False will be unless capital letter in query
@@ -2189,9 +2191,19 @@ impl Filter {
 
     /// Checks whether `device` passes through filter
     pub fn is_match(&self, device: &Device) -> bool {
-        self.is_identity_match(device)
+        !self.is_excluded_by_vidpid(device)
+            && self.is_identity_match(device)
             && !(self.exclude_empty_hub && device.is_hub() && !device.has_devices())
             && (!device.is_root_hub() || self.no_exclude_root_hub)
+    }
+
+    /// Checks whether `device` should be excluded by VID:PID pair
+    fn is_excluded_by_vidpid(&self, device: &Device) -> bool {
+        self.exclude_vidpid.as_ref().is_some_and(|pairs| {
+            pairs
+                .iter()
+                .any(|(vid, pid)| device.vendor_id == Some(*vid) && device.product_id == Some(*pid))
+        })
     }
 
     /// Checks whether `device` matches the identity criteria of the filter (VID, PID, Name, Serial, Class, etc.)
@@ -2211,7 +2223,8 @@ impl Filter {
     ///
     /// Used by profilers to decide whether to load extra data for a device
     pub fn is_potential_match(&self, device: &Device) -> bool {
-        (Some(device.location_id.bus) == self.bus || self.bus.is_none())
+        !self.is_excluded_by_vidpid(device)
+            && (Some(device.location_id.bus) == self.bus || self.bus.is_none())
             && (Some(device.location_id.number) == self.number || self.number.is_none())
             && (device.vendor_id == self.vid || self.vid.is_none())
             && (device.product_id == self.pid || self.pid.is_none())

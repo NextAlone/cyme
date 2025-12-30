@@ -1,5 +1,5 @@
 //! Config for cyme binary
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -8,6 +8,62 @@ use crate::colour;
 use crate::display;
 use crate::display::Block;
 use crate::error::{Error, ErrorKind, Result};
+
+/// Deserialize VID:PID pairs from hex strings (with or without 0x prefix)
+fn deserialize_vidpid_pairs<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Vec<(u16, u16)>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let strings: Option<Vec<String>> = Option::deserialize(deserializer)?;
+    match strings {
+        Some(pairs) => {
+            let result: std::result::Result<Vec<(u16, u16)>, _> = pairs
+                .iter()
+                .map(|s| {
+                    let parts: Vec<&str> = s.split(':').collect();
+                    if parts.len() != 2 {
+                        return Err(serde::de::Error::custom(format!(
+                            "Invalid VID:PID format '{}', expected 'VID:PID'",
+                            s
+                        )));
+                    }
+                    let vid = parse_hex_u16(parts[0]).map_err(|e| serde::de::Error::custom(e))?;
+                    let pid = parse_hex_u16(parts[1]).map_err(|e| serde::de::Error::custom(e))?;
+                    Ok((vid, pid))
+                })
+                .collect();
+            Ok(Some(result?))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Serialize VID:PID pairs to hex strings
+fn serialize_vidpid_pairs<S>(
+    pairs: &Option<Vec<(u16, u16)>>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match pairs {
+        Some(pairs) => {
+            let strings: Vec<String> = pairs
+                .iter()
+                .map(|(vid, pid)| format!("{:#06x}:{:#06x}", vid, pid))
+                .collect();
+            serializer.serialize_some(&strings)
+        }
+        None => serializer.serialize_none(),
+    }
+}
+
+fn parse_hex_u16(s: &str) -> std::result::Result<u16, String> {
+    let s = s.trim().trim_start_matches("0x");
+    u16::from_str_radix(s, 16).map_err(|e| format!("Invalid hex value '{}': {}", s, e))
+}
 use crate::icon;
 
 const CONF_DIR: &str = "cyme";
@@ -66,6 +122,13 @@ pub struct Config {
     pub hide_buses: bool,
     /// Hide empty hubs when printing tree; those with no devices. When listing will hide hubs regardless of whether empty of not
     pub hide_hubs: bool,
+    /// Exclude devices with these vendor:product ID pairs
+    #[serde(
+        default,
+        deserialize_with = "deserialize_vidpid_pairs",
+        serialize_with = "serialize_vidpid_pairs"
+    )]
+    pub exclude_vidpid: Option<Vec<(u16, u16)>>,
     /// Show root hubs when listing; Linux only
     pub list_root_hubs: bool,
     /// Show base16 values as base10 decimal instead
